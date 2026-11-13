@@ -511,7 +511,8 @@ public class Main {
             var t = one("SELECT * FROM tickets WHERE id=?", tid);
             if (t == null) { page(ctx, "<div class=card><p>not found</p></div>"); return; }
             // VULN (A01 IDOR): no ownership check on object access.
-            if (!Objects.equals(t.get("owner"), u.get("name"))) {
+            // Solve only on the goal: a non-admin reading the admin's ticket.
+            if ("admin".equals(t.get("owner")) && !"admin".equals(u.get("name"))) {
                 solve("idor");
             }
             StringBuilder cm = new StringBuilder();
@@ -747,7 +748,14 @@ public class Main {
         });
 
         app.get("/admin/ping", ctx -> {
-            if (requireUser(ctx) == null) return;
+            var u = requireUser(ctx);
+            if (u == null) return;
+            // Function-level check: diagnostics need the admin role (escalate via privesc first).
+            if (!"admin".equals(u.get("role"))) {
+                ctx.status(403);
+                page(ctx, "<div class=card><p class=warn>403 - admin only.</p></div>");
+                return;
+            }
             String host = ctx.queryParam("host") == null ? "127.0.0.1" : ctx.queryParam("host");
             // VULN (A05): user input in a shell command string.
             Process proc = new ProcessBuilder("sh", "-c", "ping -c1 " + host).redirectErrorStream(true).start();

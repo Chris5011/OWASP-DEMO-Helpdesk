@@ -314,9 +314,6 @@ def login():
             real = db().execute("SELECT password FROM users WHERE name='admin'").fetchone()["password"]
             if row["name"] == "admin" and p != real:          # got in without the password
                 solve("sqli_login")
-            # crack_md5: logging in with the cracked plaintext as a *normal* login.
-            if u == "svc" and p == "password123":
-                solve("crack_md5")
             return redirect(url_for("index"))
         return page("<div class=card><p class=warn>Invalid credentials.</p><a href=/login>back</a></div>")
     return page("""<div class=card><h2>Sign in</h2><form method=post class=grid>
@@ -396,7 +393,8 @@ def ticket_view(tid):
     if not t:
         return page("<div class=card><p>not found</p></div>")
     # VULN (A01 IDOR): no ownership check on object access.
-    if t["owner"] != current()["name"]:
+    # Solve only on the goal: a non-admin reading the admin's ticket.
+    if t["owner"] == "admin" and current()["name"] != "admin":
         solve("idor")
     cmts = db().execute("SELECT * FROM comments WHERE ticket_id=?", (tid,)).fetchall()
     # VULN (A05 stored XSS): comment bodies rendered unescaped (|safe).
@@ -451,9 +449,11 @@ def search():
         rows = db().execute(sql).fetchall()
     except Exception as e:
         return page("<div class=card><p class=warn>SQL error: {{e}}</p></div>", e=str(e))
-    pwset = {r["password"] for r in db().execute("SELECT password FROM users")}
-    flat = " ".join(str(v) for r in rows for v in tuple(r))
-    if any(pw in flat for pw in pwset):
+    # Solve only if a result cell IS another user's password (creds exfiltrated),
+    # not a substring match - so registering a weak password can't fake it.
+    others = {r["password"] for r in db().execute(
+        "SELECT password FROM users WHERE id<>?", (current()["id"],))}
+    if any(str(v) in others for r in rows for v in tuple(r) if v is not None):
         solve("sqli_union")
     return page("""<div class=card><h2>Search</h2><p><code>{{sql}}</code></p>
       <table><tr><th>col1</th><th>col2</th></tr>
@@ -532,6 +532,10 @@ def avatar():
 
 @app.route("/internal/metadata")
 def internal_metadata():
+    # "Cloud metadata": only answers loopback callers, so the flag really requires SSRF
+    # (a trainee's browser reaches the container from the Docker gateway, not loopback).
+    if request.remote_addr not in ("127.0.0.1", "::1"):
+        return Response("forbidden: internal endpoint\n", status=403, mimetype="text/plain")
     return Response("instance-role: admin\nrecovery-code: FLAG{ssrf_internal_metadata_access}\n",
                     mimetype="text/plain")
 
@@ -575,6 +579,9 @@ def admin():
 @app.route("/admin/ping")
 @login_required
 def admin_ping():
+    # Function-level check: diagnostics need the admin role (escalate via privesc first).
+    if current()["role"] != "admin":
+        return page("<div class=card><p class=warn>403 - admin only.</p></div>"), 403
     host = request.args.get("host", "127.0.0.1")
     # VULN (A05): user input in a shell command string.
     out = subprocess.run("ping -c1 " + host, shell=True, capture_output=True, text=True)
