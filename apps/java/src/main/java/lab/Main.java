@@ -67,8 +67,32 @@ public class Main {
                     "users has columns (name, password).",
                     "' UNION SELECT name,password FROM users--"),
             "FLAG{sqli_union_based_exfiltration}",
-            "Parameterise queries (PreparedStatement); least-privilege DB account.")
+            "Parameterise queries (PreparedStatement); least-privilege DB account."),
+        new Challenge("privesc", "A01", "medium", "Privilege escalation",
+            "Make your own account an administrator.",
+            List.of("The profile form saves more fields than it shows.",
+                    "The server trusts every field you submit (mass assignment).",
+                    "POST role=admin to /profile."),
+            "FLAG{mass_assignment_privilege_escalation}",
+            "Bind only an allow-list of fields; never let the client set role."),
+        new Challenge("xxe", "A05", "medium", "XXE file disclosure",
+            "Import a ticket via XML and read a server-side file.",
+            List.of("/ticket/import parses XML with external entities enabled.",
+                    "Define a DOCTYPE entity pointing at a file:// URL.",
+                    "<!DOCTYPE t [<!ENTITY x SYSTEM \"file://" + "/tmp/xxe_secret.txt"
+                        + "\">]> and use &x; in <title>."),
+            "FLAG{xxe_file_disclosure}",
+            "Disable DTDs/external entities (disallow-doctype-decl); prefer JSON."),
+        new Challenge("ssrf", "A01", "medium", "SSRF via avatar fetch",
+            "Make the server fetch an internal-only resource.",
+            List.of("Profile fetches an avatar from a URL you give it.",
+                    "The server can reach things you can't (cloud metadata).",
+                    "avatar URL = http://127.0.0.1:7000/internal/metadata"),
+            "FLAG{ssrf_internal_metadata_access}",
+            "Allow-list outbound hosts; block loopback/link-local; use a fetch broker.")
     );
+
+    static final String XXE_SECRET_FILE = "/tmp/xxe_secret.txt";
 
     static final List<String> CRACK_WORDLIST = List.of("password", "123456", "password123", "letmein",
         "qwerty", "admin", "secret", "hunter2", "welcome", "dragon");
@@ -152,6 +176,11 @@ public class Main {
         };
         try (Connection c = conn(); Statement st = c.createStatement()) {
             for (String s : ddl) st.executeUpdate(s);
+        }
+        try {
+            java.nio.file.Files.writeString(java.nio.file.Path.of(XXE_SECRET_FILE), "FLAG{xxe_file_disclosure}\n");
+        } catch (java.io.IOException e) {
+            throw new IllegalStateException("cannot write " + XXE_SECRET_FILE, e);
         }
     }
 
@@ -241,6 +270,14 @@ public class Main {
     }
 
     static String param(String v) { return v == null ? "" : v; }
+
+    /** Text of the first direct child element with this tag (like lxml findtext), or "". */
+    static String childText(org.w3c.dom.Element root, String tag) {
+        for (var n = root.getFirstChild(); n != null; n = n.getNextSibling()) {
+            if (n instanceof org.w3c.dom.Element el && el.getTagName().equals(tag)) return el.getTextContent();
+        }
+        return "";
+    }
 
     // ----------------------------------------------------------------------- //
     // UI
@@ -386,6 +423,7 @@ public class Main {
             }
             page(ctx, "<div class=card><h2>Your tickets</h2>"
                 + "<p class=row><a class=btn href=/ticket/new>+ New ticket</a>"
+                + "<a class=btn href=/ticket/import style=background:#555>Import XML</a>"
                 + "<form action=/search style=\"flex:1;display:flex;gap:.5rem\">"
                 + "<input name=q placeholder=\"search tickets\"><button>Search</button></form></p>"
                 + "<ul>" + li + "</ul></div>");
@@ -443,6 +481,104 @@ public class Main {
             exec("INSERT INTO comments(ticket_id,author,body) VALUES(?,?,?)",
                  tid, u.get("name"), param(ctx.formParam("body")));
             ctx.redirect("/ticket/" + tid);
+        });
+
+        // ---- ticket import: XXE -------------------------------------------- //
+        io.javalin.http.Handler ticketImport = ctx -> {
+            if (requireUser(ctx) == null) return;
+            String result = null;
+            String xml = ctx.formParam("xml");
+            if (xml != null) {
+                try {
+                    // VULN (A05 XXE): JDK default parser - DTDs and external entities are enabled.
+                    var dbf = javax.xml.parsers.DocumentBuilderFactory.newInstance();
+                    var builder = dbf.newDocumentBuilder();
+                    // Like Python's no_network=True: local file:// entities only, no outbound HTTP.
+                    builder.setEntityResolver((publicId, systemId) -> {
+                        if (systemId != null && !systemId.startsWith("file:"))
+                            throw new org.xml.sax.SAXException("network entities disabled: " + systemId);
+                        return null;
+                    });
+                    var doc = builder.parse(new org.xml.sax.InputSource(new java.io.StringReader(xml)));
+                    String title = childText(doc.getDocumentElement(), "title");
+                    String body = childText(doc.getDocumentElement(), "body");
+                    result = "{'title': '" + title + "', 'body': '" + body + "'}";
+                    if ((title + body).contains("FLAG{xxe_file_disclosure}")) solve("xxe");
+                } catch (Exception e) {
+                    result = "{'error': '" + e.getMessage() + "'}";
+                }
+            }
+            String sample = "<?xml version=\"1.0\"?>\n<ticket><title>Hello</title><body>from XML</body></ticket>";
+            page(ctx, "<div class=card><h2>Import ticket from XML</h2>"
+                + "<form method=post class=grid><textarea name=xml rows=6>" + h(sample) + "</textarea>"
+                + "<div><button>Import</button></div></form>"
+                + (result == null ? "" : "<h3>Parsed</h3><pre>" + h(result) + "</pre>") + "</div>");
+        };
+        app.get("/ticket/import", ticketImport);
+        app.post("/ticket/import", ticketImport);
+
+        // ---- profile: mass-assignment privesc, SSRF ------------------------ //
+        app.get("/profile", ctx -> {
+            var u = requireUser(ctx);
+            if (u == null) return;
+            page(ctx, "<div class=card><h2>Profile: " + h(u.get("name")) + "</h2>"
+                + "<p>Role: <b>" + h(u.get("role")) + "</b></p>"
+                + "<form method=post class=grid><div><label>New password</label><input name=password></div>"
+                + "<div><button>Save</button></div></form></div>"
+                + "<div class=card><h3>Avatar by URL</h3>"
+                + "<form action=/profile/avatar class=grid><input name=url placeholder=http://...>"
+                + "<div><button>Fetch</button></div></form></div>");
+        });
+
+        app.post("/profile", ctx -> {
+            var u = requireUser(ctx);
+            if (u == null) return;
+            // VULN (A01 privesc): every submitted field is written (mass assignment).
+            Map<String, String> fields = new LinkedHashMap<>();
+            for (String k : List.of("password", "role")) {
+                String v = ctx.formParam(k);
+                if (v != null) fields.put(k, v);
+            }
+            for (var e : fields.entrySet()) {
+                exec("UPDATE users SET " + e.getKey() + "=? WHERE id=?", e.getValue(), u.get("id"));
+            }
+            if ("admin".equals(fields.get("role")) && !"admin".equals(u.get("role"))) {
+                solve("privesc");
+            }
+            ctx.redirect("/profile");
+        });
+
+        app.get("/profile/avatar", ctx -> {
+            if (requireUser(ctx) == null) return;
+            String url = param(ctx.queryParam("url"));
+            String host = url.contains("://") && url.split("/").length > 2 ? url.split("/")[2] : "";
+            // VULN (A01 SSRF): server fetches an arbitrary user-supplied URL.
+            for (String bad : List.of("127.0.0.1", "localhost", "169.254.169.254", "0.0.0.0")) {
+                if (host.contains(bad)) { solve("ssrf"); break; }
+            }
+            String data;
+            try {
+                var conn = new java.net.URI(url).toURL().openConnection();
+                conn.setConnectTimeout(3000);
+                conn.setReadTimeout(3000);
+                try (var in = conn.getInputStream()) {
+                    data = new String(in.readNBytes(2000), java.nio.charset.StandardCharsets.UTF_8);
+                }
+            } catch (Exception e) {
+                data = "fetch error: " + e;
+            }
+            page(ctx, "<div class=card><h2>Fetched</h2><pre>" + h(data) + "</pre></div>");
+        });
+
+        // "Cloud metadata": only answers loopback callers, so the flag really requires SSRF
+        // (a trainee's browser reaches the container from the Docker gateway, not loopback).
+        app.get("/internal/metadata", ctx -> {
+            if (!java.net.InetAddress.getByName(ctx.req().getRemoteAddr()).isLoopbackAddress()) {
+                ctx.status(403).result("forbidden: internal endpoint\n");
+                return;
+            }
+            ctx.contentType("text/plain")
+               .result("instance-role: admin\nrecovery-code: FLAG{ssrf_internal_metadata_access}\n");
         });
 
         // ---- report: verbose error disclosure ------------------------------ //
