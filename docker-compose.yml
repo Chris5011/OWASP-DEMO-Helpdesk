@@ -1,0 +1,27 @@
+name: secdevsw-lab
+
+# Intentionally vulnerable training lab. Bind to localhost only.
+# Each app publishes on 127.0.0.1 so nothing is exposed on your LAN.
+
+services:
+  landing:
+    image: nginx:alpine
+    volumes:
+      - ./landing:/usr/share/nginx/html:ro
+    ports:
+      - "127.0.0.1:8080:80"
+
+  python:
+    build: ./apps/python
+    ports:
+      - "127.0.0.1:5000:5000"
+
+  java:
+    build: ./apps/java
+    ports:
+      - "127.0.0.1:7000:7000"
+
+  dotnet:
+    build: ./apps/dotnet
+    ports:
+      - "127.0.0.1:5001:5001"

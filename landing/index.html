@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SecDevSW Vulnerability Lab · OWASP Top 10:2025</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 15px/1.6 system-ui, sans-serif; margin: 2rem auto; max-width: 56rem; padding: 0 1rem; }
+  h1 { margin-bottom: .2rem; }
+  .warn { background: #b00; color: #fff; padding: .6rem .9rem; border-radius: 6px; font-weight: 600; }
+  .card { border: 1px solid #8884; border-radius: 10px; padding: 1rem 1.2rem; margin: 1rem 0; }
+  table { border-collapse: collapse; width: 100%; margin-top: .6rem; }
+  th, td { border: 1px solid #8884; padding: .35rem .6rem; text-align: left; }
+  th { background: #8882; }
+  a { text-decoration: none; }
+  .big a { font-weight: 600; font-size: 1.05rem; }
+  code { background: #8882; padding: .1em .35em; border-radius: 3px; }
+</style>
+
+<h1>SecDevSW Vulnerability Lab</h1>
+<p>OWASP Top 10:2025 training lab</p>
+<p class="warn">Intentionally vulnerable. Run on localhost only. Never deploy on a public or shared network.</p>
+
+<div class="card big">
+  <h2>Challenge lab &middot; Python / Flask</h2>
+  <p>A coherent vulnerable "Helpdesk" app. Find and exploit the flaws in normal
+  features; solves are auto-detected on the scoreboard with progressive hints, flags
+  and fix notes.</p>
+  <p>&rarr; <a href="http://localhost:5000/scoreboard">Scoreboard (objectives)</a>
+     &middot; <a href="http://localhost:5000/">Helpdesk</a>
+     &middot; <a href="http://localhost:5000/storage">Credential storage</a>
+     &middot; <a href="http://localhost:5000/hardening">Hardening (day 3)</a></p>
+  <table>
+    <tr><th>#</th><th>OWASP</th><th>Challenge</th><th>Diff</th></tr>
+    <tr><td>1</td><td>A05</td><td>Authentication bypass (SQLi)</td><td>easy</td></tr>
+    <tr><td>2</td><td>A01</td><td>Read the admin's ticket (IDOR)</td><td>easy</td></tr>
+    <tr><td>3</td><td>A01</td><td>Forced browsing to admin</td><td>easy</td></tr>
+    <tr><td>4</td><td>A02</td><td>Verbose error / info disclosure</td><td>easy</td></tr>
+    <tr><td>5</td><td>A04</td><td>Crack a leaked hash</td><td>easy</td></tr>
+    <tr><td>6</td><td>A05</td><td>Credential exfiltration (UNION SQLi)</td><td>medium</td></tr>
+    <tr><td>7</td><td>A01</td><td>Privilege escalation (mass assignment)</td><td>medium</td></tr>
+    <tr><td>8</td><td>A05</td><td>XXE file disclosure</td><td>medium</td></tr>
+    <tr><td>9</td><td>A05</td><td>Steal the admin's cookie (stored XSS)</td><td>medium</td></tr>
+    <tr><td>10</td><td>A01</td><td>SSRF via avatar fetch</td><td>medium</td></tr>
+    <tr><td>11</td><td>A05</td><td>OS command injection</td><td>hard</td></tr>
+    <tr><td>12</td><td>A08</td><td>Insecure deserialization</td><td>hard</td></tr>
+  </table>
+</div>
+
+<div class="card">
+  <h2>Day-3 hardening (fix it in source)</h2>
+  <p><a href="http://localhost:5000/hardening">/hardening</a> grades the live app:
+  security response headers, a <code>/csp-report</code> endpoint, and security
+  logging/monitoring (A09). Everything starts red; trainees fix <code>app.py</code>
+  and watch it go green, then run code/dependency scanners.</p>
+</div>
+
+<div class="card">
+  <h2>Demonstrator apps &middot; Java &amp; .NET</h2>
+  <p>Side-by-side <code>/&lt;class&gt;/vuln</code> vs <code>/&lt;class&gt;/secure</code>
+  routes (SQLi, XSS, IDOR, crypto). Challenge-mode conversion pending.</p>
+  <p><a href="http://localhost:7000/">Java / Javalin :7000</a>
+     &middot; <a href="http://localhost:5001/">.NET / C# :5001</a></p>
+</div>
+</html>
