@@ -46,8 +46,33 @@ public class Main {
                     "The route still exists.",
                     "Browse directly to /admin."),
             "FLAG{forced_browsing_missing_function_ac}",
-            "Enforce function-level authorization server-side, not by hiding links.")
+            "Enforce function-level authorization server-side, not by hiding links."),
+        new Challenge("error_disclosure", "A02", "easy", "Verbose error leak",
+            "Make the printable-report feature leak an internal stack trace.",
+            List.of("Every ticket has a 'Printable report' link -> /report?id=<n>.",
+                    "The id is used without validation.",
+                    "Give it a non-numeric id: /report?id=abc"),
+            "FLAG{verbose_error_information_disclosure}",
+            "Validate input; fail closed with a generic message; log details server-side."),
+        new Challenge("crack_md5", "A04", "easy", "Crack a leaked hash",
+            "On /storage, crack the leaked MD5 hash and submit the plaintext.",
+            List.of("Unsalted MD5 of a common password.",
+                    "Hash it against a small wordlist.",
+                    "The plaintext is a very common password ending in 123."),
+            "FLAG{weak_hash_cracked}",
+            "Store passwords with Argon2id or PBKDF2 (salted, slow) - never MD5/SHA."),
+        new Challenge("sqli_union", "A05", "medium", "Exfiltrate credentials",
+            "Use ticket search to read the users table via UNION.",
+            List.of("Search runs a LIKE query you can break out of.",
+                    "users has columns (name, password).",
+                    "' UNION SELECT name,password FROM users--"),
+            "FLAG{sqli_union_based_exfiltration}",
+            "Parameterise queries (PreparedStatement); least-privilege DB account.")
     );
+
+    static final List<String> CRACK_WORDLIST = List.of("password", "123456", "password123", "letmein",
+        "qwerty", "admin", "secret", "hunter2", "welcome", "dragon");
+    static final String CRACK_TARGET = hexDigest("MD5", "password123");   // the crack_md5 challenge
 
     // ----------------------------------------------------------------------- //
     // DB helpers + solve engine
@@ -131,6 +156,75 @@ public class Main {
     }
 
     // ----------------------------------------------------------------------- //
+    // Hashing (credential-storage hands-on)
+    // ----------------------------------------------------------------------- //
+    static String hex(byte[] b) {
+        StringBuilder sb = new StringBuilder();
+        for (byte x : b) sb.append(String.format("%02x", x));
+        return sb.toString();
+    }
+
+    static String hexDigest(String alg, String s) {
+        try {
+            return hex(java.security.MessageDigest.getInstance(alg)
+                       .digest(s.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+        } catch (java.security.NoSuchAlgorithmException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    static String hashScheme(String scheme, String pw) throws Exception {
+        switch (scheme) {
+            case "cleartext": return pw;
+            case "md5":       return hexDigest("MD5", pw);
+            case "sha256":    return hexDigest("SHA-256", pw);
+            case "pbkdf2": {
+                var spec = new javax.crypto.spec.PBEKeySpec(pw.toCharArray(),
+                        "per-user-salt".getBytes(java.nio.charset.StandardCharsets.UTF_8), 200000, 256);
+                return hex(javax.crypto.SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256")
+                           .generateSecret(spec).getEncoded());
+            }
+            case "argon2id": {
+                // Same parameters as argon2-cffi's defaults (t=3, m=64MiB, p=4), PHC string format.
+                byte[] salt = new byte[16];
+                new java.security.SecureRandom().nextBytes(salt);
+                var params = new org.bouncycastle.crypto.params.Argon2Parameters.Builder(
+                        org.bouncycastle.crypto.params.Argon2Parameters.ARGON2_id)
+                        .withVersion(org.bouncycastle.crypto.params.Argon2Parameters.ARGON2_VERSION_13)
+                        .withIterations(3).withMemoryAsKB(65536).withParallelism(4).withSalt(salt).build();
+                var gen = new org.bouncycastle.crypto.generators.Argon2BytesGenerator();
+                gen.init(params);
+                byte[] out = new byte[32];
+                gen.generateBytes(pw.getBytes(java.nio.charset.StandardCharsets.UTF_8), out);
+                var b64 = Base64.getEncoder().withoutPadding();
+                return "$argon2id$v=19$m=65536,t=3,p=4$" + b64.encodeToString(salt) + "$" + b64.encodeToString(out);
+            }
+            default: return "?";
+        }
+    }
+
+    static String crack(String hv) {
+        for (String w : CRACK_WORDLIST)
+            if (hexDigest("MD5", w).equals(hv) || hexDigest("SHA-256", w).equals(hv)) return w;
+        return null;
+    }
+
+    /** Honest teaching verdict per scheme: {pill-class, label}. */
+    static String[] verdict(String scheme, String hv) {
+        switch (scheme) {
+            case "cleartext": return new String[]{"no", "Plaintext - fully exposed"};
+            case "md5": case "sha256": {
+                String w = crack(hv);
+                return w != null ? new String[]{"no", "Cracked: " + w}
+                                 : new String[]{"warn", "Fast hash - crackable offline"};
+            }
+            case "pbkdf2":   return new String[]{"ok", "Salted + slow (200k) - resistant"};
+            case "argon2id": return new String[]{"ok", "Memory-hard - resistant"};
+            default:         return new String[]{"warn", "?"};
+        }
+    }
+
+    // ----------------------------------------------------------------------- //
     // Session helpers
     // ----------------------------------------------------------------------- //
     static Map<String, Object> current(Context ctx) throws SQLException {
@@ -190,7 +284,8 @@ public class Main {
 
     static String layout(Map<String, Object> user, String body) {
         StringBuilder nav = new StringBuilder("<nav><span class=brand>&#128737; Helpdesk</span>"
-            + "<a href=\"/\">Home</a><a href=\"/tickets\">Tickets</a><a href=\"/scoreboard\">Scoreboard</a>");
+            + "<a href=\"/\">Home</a><a href=\"/tickets\">Tickets</a><a href=\"/storage\">Storage</a>"
+            + "<a href=\"/scoreboard\">Scoreboard</a>");
         if (user != null) {
             if ("admin".equals(user.get("role"))) nav.append("<a href=\"/admin\">Admin</a>");
             nav.append("<span class=\"sp u\">").append(h(user.get("name"))).append(" &middot; ")
@@ -290,7 +385,9 @@ public class Main {
                   .append(" ").append(h(t.get("title"))).append("</a></li>");
             }
             page(ctx, "<div class=card><h2>Your tickets</h2>"
-                + "<p class=row><a class=btn href=/ticket/new>+ New ticket</a></p>"
+                + "<p class=row><a class=btn href=/ticket/new>+ New ticket</a>"
+                + "<form action=/search style=\"flex:1;display:flex;gap:.5rem\">"
+                + "<input name=q placeholder=\"search tickets\"><button>Search</button></form></p>"
                 + "<ul>" + li + "</ul></div>");
         });
 
@@ -329,7 +426,8 @@ public class Main {
                 cm.append("<p><b>").append(h(c.get("author"))).append(":</b> ").append(c.get("body")).append("</p>");
             }
             page(ctx, "<div class=card><h2>#" + t.get("id") + " " + h(t.get("title")) + "</h2>"
-                + "<p class=muted>owner: " + h(t.get("owner")) + "</p>"
+                + "<p class=muted>owner: " + h(t.get("owner")) + " &middot; "
+                + "<a href=\"/report?id=" + t.get("id") + "\">Printable report</a></p>"
                 + "<p>" + h(t.get("body")) + "</p><h3>Comments</h3>" + cm
                 + "<form method=post action=\"/ticket/" + t.get("id") + "/comment\" class=grid>"
                 + "<textarea name=body rows=2 placeholder=\"add a comment\"></textarea>"
@@ -346,6 +444,100 @@ public class Main {
                  tid, u.get("name"), param(ctx.formParam("body")));
             ctx.redirect("/ticket/" + tid);
         });
+
+        // ---- report: verbose error disclosure ------------------------------ //
+        app.get("/report", ctx -> {
+            var u = requireUser(ctx);
+            if (u == null) return;
+            String rid = ctx.queryParam("id") == null ? "1" : ctx.queryParam("id");
+            String secretConfig = "DB_PASS=S3cr3t-R00t-P@ss";            // pretend config in scope
+            // VULN (A02/A10): input used without validation; stack trace shown to the client.
+            try {
+                int n = Integer.parseInt(rid);
+                var t = one("SELECT * FROM tickets WHERE id=?", n);
+                // ownership check: a report is not a backdoor to other people's tickets.
+                if (t != null && !Objects.equals(t.get("owner"), u.get("name")) && !"admin".equals(u.get("role"))) {
+                    ctx.status(403);
+                    page(ctx, "<div class=card><p class=warn>403 - not your ticket.</p></div>");
+                    return;
+                }
+                page(ctx, "<div class=card><h2>Report #" + n + "</h2><pre>" + h(t == null ? "{}" : t) + "</pre></div>");
+            } catch (NumberFormatException e) {
+                solve("error_disclosure");
+                java.io.StringWriter sw = new java.io.StringWriter();
+                e.printStackTrace(new java.io.PrintWriter(sw));
+                String tb = sw + "\nlocals: " + secretConfig;
+                ctx.status(500);
+                page(ctx, "<div class=card><h2 class=warn>Unhandled error</h2><pre>" + h(tb) + "</pre></div>");
+            }
+        });
+
+        // ---- search: UNION-based SQLi -------------------------------------- //
+        app.get("/search", ctx -> {
+            var u = requireUser(ctx);
+            if (u == null) return;
+            String q = param(ctx.queryParam("q"));
+            // VULN (A05 SQLi): LIKE query built by concatenation; UNION-able.
+            String sql = "SELECT title, body FROM tickets WHERE title LIKE '%" + q + "%'";
+            List<Map<String, Object>> found;
+            try {
+                found = rawQuery(sql);
+            } catch (SQLException e) {
+                page(ctx, "<div class=card><p class=warn>SQL error: " + h(e.getMessage()) + "</p></div>");
+                return;
+            }
+            // Solve only if a result cell IS another user's password (i.e. creds were exfiltrated),
+            // not merely a substring match - so registering a weak password can't fake it.
+            Set<String> others = new HashSet<>();
+            for (var r : query("SELECT password FROM users WHERE id<>?", u.get("id"))) others.add((String) r.get("password"));
+            StringBuilder tr = new StringBuilder();
+            boolean leaked = false;
+            for (var r : found) {
+                tr.append("<tr>");
+                for (Object v : r.values()) {
+                    if (v != null && others.contains(v.toString())) leaked = true;
+                    tr.append("<td>").append(h(v)).append("</td>");
+                }
+                tr.append("</tr>");
+            }
+            if (leaked) solve("sqli_union");
+            page(ctx, "<div class=card><h2>Search</h2><p><code>" + h(sql) + "</code></p>"
+                + "<table><tr><th>col1</th><th>col2</th></tr>" + tr + "</table></div>");
+        });
+
+        // ---- credential storage hands-on (A04) + crack challenge ----------- //
+        io.javalin.http.Handler storage = ctx -> {
+            String pw = ctx.formParam("pw") == null ? "password" : ctx.formParam("pw");
+            StringBuilder tr = new StringBuilder();
+            for (String s : List.of("cleartext", "md5", "sha256", "pbkdf2", "argon2id")) {
+                String hv = hashScheme(s, pw);
+                String[] v = verdict(s, hv);
+                tr.append("<tr><td>").append(s).append("</td><td><code>").append(h(hv)).append("</code></td>")
+                  .append("<td><span class=\"pill ").append(v[0]).append("\">").append(h(v[1])).append("</span></td></tr>");
+            }
+            String submitted = ctx.formParam("plain");
+            boolean crackedOk = submitted != null && hexDigest("MD5", submitted).equals(CRACK_TARGET);
+            if (crackedOk) solve("crack_md5");
+            String result = submitted == null ? ""
+                : crackedOk ? "<p class=flag>Correct - FLAG{weak_hash_cracked}</p>"   // loot only via the crack
+                            : "<p class=warn>nope, keep trying</p>";
+            page(ctx, "<div class=card><h2>Credential storage</h2>"
+                + "<p class=muted>Enter a password and see how each scheme would store it, with an "
+                + "honest verdict. A quick wordlist is run against the fast hashes.</p>"
+                + "<form method=post class=row><input name=pw value=\"" + h(pw) + "\"><button>Hash it</button></form>"
+                + "<table class=fixed><tr><th>Scheme</th><th>Stored value</th><th>Verdict</th></tr>" + tr + "</table>"
+                + "<p class=muted><span class=\"pill no\">red</span> broken &middot; "
+                + "<span class=\"pill warn\">amber</span> weak (fast, brute-forceable) &middot; "
+                + "<span class=\"pill ok\">green</span> use this (salted + slow). Fix the app to store "
+                + "with Argon2id.</p></div>"
+                + "<div class=card><h3>Challenge: crack the leaked hash</h3>"
+                + "<p>A breach dumped this unsalted MD5. Recover the plaintext and submit it.</p>"
+                + "<p><code>" + CRACK_TARGET + "</code></p>"
+                + "<form method=post class=row><input type=hidden name=pw value=\"" + h(pw) + "\">"
+                + "<input name=plain placeholder=\"plaintext\"><button>Submit</button></form>" + result + "</div>");
+        };
+        app.get("/storage", storage);
+        app.post("/storage", storage);
 
         // ---- admin: forced browsing ---------------------------------------- //
         app.get("/admin", ctx -> {
