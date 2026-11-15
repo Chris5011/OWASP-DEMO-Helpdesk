@@ -6,8 +6,9 @@ orchestrator). Read this + `README.md` first, then pick from the backlog.
 ## What this is
 A self-hosted, intentionally vulnerable training lab for OWASP Top 10:2025.
 `apps/python/` is the mature **challenge app** (12 challenges, a Helpdesk web app with
-a scoreboard); `apps/java/` and `apps/dotnet/` are still the older **demonstrator**
-pattern (side-by-side `/vuln` and `/secure` routes). Landing + compose tie it together.
+a scoreboard). `apps/java/` (Javalin, single `Main.java`) is at parity for 11/12 —
+`deser` is pending. `apps/dotnet/` is still the older **demonstrator** pattern
+(side-by-side `/vuln` and `/secure` routes). Landing + compose tie it together.
 
 ## Invariants — do not break these
 - **Localhost only.** Keep compose bound to `127.0.0.1`. It is deliberately vulnerable.
@@ -44,9 +45,13 @@ ticket view, UNION search, role=admin POST, XXE import, SSRF url, cmdi ping, dou
 pickle import, cookie-exfil comment). The XSS bot needs ~3s.
 
 ## Backlog (prioritised)
-1. **Language parity**: convert `apps/java` and `apps/dotnet` from demonstrator to the
-   Helpdesk challenge model — same challenge ids, flags, and server-side solve-detection,
-   so a cohort can run the lab in their own stack. Keep the invariants above.
+1. **Language parity**: Java — add `deser` (an app class whose `readObject` drops the
+   `/tmp/deser_pwned` canary; no vulnerable library). .NET — convert from demonstrator to
+   the Helpdesk challenge model — same challenge ids, flags, and server-side
+   solve-detection. Keep the invariants above.
+1b. **Day-3 dev mode** (to discuss): DB on a named volume + seed-once so code edits and
+   restarts don't wipe solves; `docker-compose.dev.yml` with source bind mounts
+   (Python `use_reloader=True, debug=False` — never the Werkzeug debugger).
 2. **Deepen the Python set**: CSRF (state-changing form, no token), JWT `alg:none` /
    weak-secret, blind/boolean SQLi, open redirect, path traversal, a business-logic flaw.
 3. **Day-3 deliverables**: ship a `semgrep` ruleset + `trivy`/`grype`/`syft` config and a

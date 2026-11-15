@@ -7,6 +7,27 @@ control, alongside hosted labs (PortSwigger/Juice Shop) for the attack-only dril
 > ⚠️ **Intentionally vulnerable.** The compose file binds every port to `127.0.0.1`.
 > Never run this on a public, shared, or production network.
 
+## Safe use — read before running
+
+The apps contain **real** remote-code-execution flaws (OS command injection,
+insecure deserialization) and an SSRF that fetches arbitrary URLs. Containment
+comes from Docker, so:
+
+1. **Run it only via `docker compose`.** Never start an app directly on your machine
+   (`python app.py`, `java -jar …`, `dotnet run`): the command-injection and
+   deserialization challenges would then execute on *your* host, not in a container.
+2. **Only on your own machine, bound to localhost.** Do not change the `127.0.0.1`
+   port bindings, and don't run it on a shared server, cloud VM, or lab PC others can reach.
+3. **No GitHub Codespaces / cloud dev environments.** Their port forwarding can
+   publish the apps to the internet.
+4. **Stop it when you're done:** `docker compose down`.
+
+### The flaws are deliberate
+Every vulnerability, outdated pattern and hard-coded "credential" (e.g.
+`S3cr3t-R00t-P@ss`) in this repository is intentional and fake. Please **don't file
+security issues** for them. Scanner alerts (Dependabot, code scanning, secret
+scanning) are expected — on day 3 they're part of the exercise.
+
 ## Quickstart
 
 ```bash
@@ -19,10 +40,15 @@ challenge lab's scoreboard: **http://localhost:5000/scoreboard**.
 | App | URL | Mode |
 |-----|-----|------|
 | Python/Flask | http://localhost:5000 | **Challenge lab** (Helpdesk + scoreboard) |
-| Java/Javalin | http://localhost:7000 | Demonstrator (vuln/secure routes) |
+| Java/Javalin | http://localhost:7000 | **Challenge lab** (same Helpdesk, 11/12 — `deser` in progress) |
 | .NET/C# | http://localhost:5001 | Demonstrator (vuln/secure routes) |
 
-## Python challenge lab (Juice Shop / PSA style)
+## Helpdesk challenge lab (Juice Shop / PSA style)
+
+Implemented in Python/Flask (`apps/python`, reference) and Java/Javalin
+(`apps/java`, port 7000) with the same challenge ids, flags and server-side solve
+detection, so a cohort can work in its own stack. Paths below are identical in both;
+only the port differs.
 
 A single coherent **Helpdesk** application. Vulnerabilities are embedded in normal
 features — you find and exploit them to reach a goal. The server **auto-detects**
@@ -41,8 +67,8 @@ note. Progressive hints (3 per challenge) suit mixed-level cohorts.
 | 8 | A05 | XXE file disclosure | medium | `/ticket/import` (XML) |
 | 9 | A05 | Steal admin cookie (stored XSS → collector) | medium | ticket comment + `/collector/log` |
 | 10 | A01 | SSRF via avatar fetch | medium | `/profile/avatar?url=` |
-| 11 | A05 | OS command injection | hard | admin diagnostics (needs admin) |
-| 12 | A08 | Insecure deserialization | hard | profile export/import |
+| 11 | A05 | OS command injection | hard | `/admin/ping` (needs the admin role) |
+| 12 | A08 | Insecure deserialization | hard | profile export/import (Java: in progress) |
 
 Notes:
 - **Chained kill chain**: #7 (privesc) grants the admin role needed for #11 (command
@@ -51,7 +77,9 @@ Notes:
   cookie-exfil payload (a sink **and** `document.cookie` **and** a URL). `alert(1)`
   proves nothing. It delivers the admin cookie to `/collector`; read `/collector/log`.
 - **IDOR** target is the admin's ticket (you don't have that login), so it genuinely
-  requires the flaw.
+  requires the flaw; reading another normal user's ticket doesn't count.
+- **SSRF**: `/internal/metadata` only answers the server itself — you have to make
+  the server fetch it.
 - Seeded users: `alice/alicepw`, `bob/bobpw`, `admin/<secret>`. Register your own too.
 - Reset state: restart the container (DB is reseeded on boot).
 
@@ -74,20 +102,20 @@ code/dependency scanners (see A03 below).
 ### Teaching flow
 Challenge-first, then remediation: learners exploit (Understand → Demonstrate →
 Investigate), the scoreboard reveals the **Fix** note on solve, then they apply it in
-the demonstrator apps' `/secure` handlers (Remediate → Verify).
+the app's source and re-run the exploit to confirm it now fails (Remediate → Verify).
+The .NET demonstrator's `/secure` handlers show a worked before/after.
 
 ### Adding a challenge
 1. Append a dict to `CHALLENGES` in `apps/python/app.py` (id, cat, diff, goal, hints, flag, fix).
 2. Embed the flaw in a feature handler; call `solve("<id>")` from the detection check.
 3. Done — the scoreboard renders it automatically.
 
-## Demonstrator apps (Java, .NET)
+## Demonstrator app (.NET)
 
 Side-by-side `/<class>/vuln` vs `/<class>/secure` routes for SQLi, XSS, IDOR and
 cryptographic storage — the explicit before/after for the Remediate→Verify step.
-Not build-tested in-repo (no Maven/NuGet egress here); `docker compose up --build`
-restores and compiles them. **Challenge-mode conversion to the Helpdesk pattern is
-the next step** if you want parity across languages.
+**Conversion to the Helpdesk challenge model is the next step** for parity with
+Python and Java. (`/hardening` is also Python-only so far.)
 
 ## Stack-level categories (no per-app route)
 
@@ -111,6 +139,6 @@ source of truth.
 
 ## License
 
-Your own material — recommend MIT. No third-party lab content is bundled, so there is
-no commercial-use restriction. The vulnerability patterns are the standard textbook
-classes (same category as DVWA / Juice Shop).
+[MIT](LICENSE). No third-party lab content is bundled. The vulnerability patterns are
+the standard textbook classes (same category as DVWA / Juice Shop). Provided for
+education only, without warranty — see the safe-use rules above.
