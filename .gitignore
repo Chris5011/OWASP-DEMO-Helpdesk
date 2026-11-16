@@ -3,3 +3,6 @@ bin/
 obj/
 __pycache__/
 *.db
+
+# Instructor solution key - never publish
+SOLUTIONS.md
