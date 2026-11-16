@@ -30,6 +30,11 @@ scanning) are expected — on day 3 they're part of the exercise.
 
 ## Quickstart
 
+No Docker yet on **Kali Linux**? Run `sudo ./scripts/install-docker-kali.sh`. It
+installs Docker Engine + the Compose plugin from Docker's official Debian repo
+(pinned to `trixie`, since Kali reports `kali-rolling`, which Docker doesn't publish),
+removes a conflicting `docker.io`, and adds you to the `docker` group (log out/in after).
+
 ```bash
 docker compose up --build
 ```
