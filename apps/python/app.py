@@ -146,6 +146,32 @@ CHALLENGES = [
 ]
 BY_ID = {c["id"]: c for c in CHALLENGES}
 
+# Human-readable OWASP 2025 category names for the challenge detail page.
+CAT_NAMES = {
+    "A01": "A01 Broken Access Control",
+    "A02": "A02 Security Misconfiguration",
+    "A04": "A04 Cryptographic Failures",
+    "A05": "A05 Injection",
+    "A08": "A08 Software & Data Integrity Failures",
+}
+# Where each challenge's vulnerable feature lives: (url, label, prerequisite note | None).
+# Powers the "Start here" button so participants aren't hunting for the entry point.
+START = {
+    "sqli_login":       ("/login", "the sign-in form", None),
+    "idor":             ("/tickets", "your ticket list, then walk the ids", None),
+    "forced_admin":     ("/admin", "the admin panel URL directly", None),
+    "error_disclosure": ("/report?id=1", "a ticket's Printable report", None),
+    "crack_md5":        ("/storage", "the credential-storage page", None),
+    "sqli_union":       ("/tickets", "the ticket search box", None),
+    "privesc":          ("/profile", "your profile form", None),
+    "xxe":              ("/ticket/import", "the XML ticket import", None),
+    "xss_stored":       ("/tickets", "open a ticket and add a comment", None),
+    "ssrf":             ("/profile", "the avatar-by-URL fetch", None),
+    "cmdi":             ("/admin", "admin network diagnostics",
+                         "Needs the admin role - solve Privilege escalation first."),
+    "deser":            ("/profile", "profile export / import", None),
+}
+
 
 # --------------------------------------------------------------------------- #
 # DB + solve engine
@@ -732,20 +758,78 @@ def hardening():
 
 
 # --------------------------------------------------------------------------- #
-# Scoreboard
+# Challenge detail page: goal + "Start here" link + staggered hints
+# --------------------------------------------------------------------------- #
+@app.route("/challenge/<cid>")
+def challenge_detail(cid):
+    c = BY_ID.get(cid)
+    if not c:
+        return page("<div class=card><p>No such challenge.</p>"
+                    "<a href=/scoreboard>&larr; back to scoreboard</a></div>"), 404
+    done = cid in solved_ids()
+    url, label, note = START.get(cid, ("/", "the app", None))
+    # Hints render here (staggered, client-side); flag/fix only appear once solved.
+    return page("""<div class=card>
+      <p><a href="/scoreboard">&larr; All challenges</a></p>
+      <h2>{{c['title']}}
+        {% if done %}<span class="pill ok">SOLVED</span>{% else %}<span class="pill no">open</span>{% endif %}</h2>
+      <p class=muted>{{catname}} &middot; {{c['diff']}}</p>
+      <p><b>Goal:</b> {{c['goal']}}</p>
+      {% if note %}<p class=warn>&#9888; {{note}}</p>{% endif %}
+      <p><a class=btn href="{{start_url}}">&#9654; Start here &mdash; {{start_label}}</a></p>
+      <p class=muted>Exploit the feature; the server detects the solve and this page turns
+      green. There's no flag to submit.</p></div>
+      <div class=card><h3>Hints</h3>
+      <p class=muted>Stuck? Reveal them one at a time &mdash; each is more specific than the last.</p>
+      <div id=hints class=grid>
+      {% for h in c['hints'] %}<div class=hint {% if not loop.first %}hidden{% endif %}>
+        <b>Hint {{loop.index}}.</b> {{h}}</div>{% endfor %}</div>
+      <p class=row><button id=moreHint type=button>Show next hint</button>
+      <span id=hintCount class=muted></span></p></div>
+      {% if done %}<div class=card><p class=flag>{{c['flag']}}</p>
+      <p class=muted><b>Fix:</b> {{c['fix']}}</p></div>{% endif %}
+      <script>
+      (function(){
+        var hints = document.querySelectorAll('#hints .hint');
+        var btn = document.getElementById('moreHint');
+        var count = document.getElementById('hintCount');
+        if(!hints.length){return;}
+        var shown = 1;
+        function update(){
+          count.textContent = shown + ' of ' + hints.length + ' shown';
+          if(shown >= hints.length){ btn.hidden = true; }
+          else { btn.textContent = 'Show hint ' + (shown + 1); }
+        }
+        btn.addEventListener('click', function(){
+          if(shown < hints.length){ hints[shown].hidden = false; shown++; update(); }
+        });
+        update();
+      })();
+      </script>""",
+                c=c, done=done, catname=CAT_NAMES.get(c["cat"], c["cat"]),
+                start_url=url, start_label=label, note=note)
+
+
+# --------------------------------------------------------------------------- #
+# Scoreboard (the challenge index)
 # --------------------------------------------------------------------------- #
 @app.route("/scoreboard")
 def scoreboard():
     done = solved_ids()
     return page("""<div class=card><h2>Scoreboard</h2>
       <p>{{done|length}} / {{all|length}} solved.</p>
-      <table><tr><th>OWASP</th><th>Challenge</th><th>Diff</th><th>Status</th><th>Hints / Flag / Fix</th></tr>
+      <p class=muted>Click a challenge to open it: you'll get the goal, a
+      <b>Start here</b> link to the vulnerable feature, and hints you reveal one at a
+      time. Exploit it and the row turns green automatically.</p>
+      <table><tr><th>OWASP</th><th>Challenge</th><th>Diff</th><th>Status</th><th>Details</th></tr>
       {% for c in all %}<tr class="{{'ok' if c['id'] in done else ''}}">
-        <td>{{c['cat']}}</td><td><b>{{c['title']}}</b><br><small class=muted>{{c['goal']}}</small></td>
+        <td>{{c['cat']}}</td>
+        <td><b><a href="/challenge/{{c['id']}}">{{c['title']}}</a></b>
+            <br><small class=muted>{{c['goal']}}</small></td>
         <td>{{c['diff']}}</td>
         <td>{% if c['id'] in done %}<span class="pill ok">SOLVED</span>{% else %}<span class="pill no">open</span>{% endif %}</td>
-        <td><details><summary>hints</summary><ol>{% for h in c['hints'] %}<li>{{h}}</li>{% endfor %}</ol></details>
-        {% if c['id'] in done %}<span class=flag>{{c['flag']}}</span><br><small class=muted>Fix: {{c['fix']}}</small>{% endif %}</td>
+        <td><a href="/challenge/{{c['id']}}">Open &rarr;</a>
+        {% if c['id'] in done %}<br><span class=flag>{{c['flag']}}</span><br><small class=muted>Fix: {{c['fix']}}</small>{% endif %}</td>
       </tr>{% endfor %}</table></div>""", all=CHALLENGES, done=done)
 
 
