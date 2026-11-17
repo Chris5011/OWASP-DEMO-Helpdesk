@@ -1,0 +1,38 @@
+# Day-3 "fix it in source" overlay.
+#
+#   Python:  docker compose -f docker-compose.yml -f docker-compose.dev.yml up python
+#   .NET:    docker compose -f docker-compose.yml -f docker-compose.dev.yml up dotnet
+#
+# Adds, on top of the normal stack:
+#   - a live-reload loop: your edits to the app source reload it in ~1-2s, no rebuild
+#     (Flask reloader for Python; `dotnet watch` for .NET);
+#   - a persistent DB on a named volume, so solve progress survives reloads and
+#     restarts (reset it with: docker compose ... down -v).
+#
+# Days 1-2 are unchanged: run the normal `docker compose up` without this file.
+services:
+  python:
+    environment:
+      HELPDESK_DB: /data/helpdesk.db   # DB on the volume below, not ephemeral /tmp
+      HELPDESK_PERSIST: "1"            # keep solves unless RESET=1 / down -v
+      HELPDESK_RELOAD: "1"             # Werkzeug live reload on source change
+      # RESET: "1"                     # uncomment for one boot to wipe + reseed
+    volumes:
+      - ./apps/python:/app:ro          # edit on the host; container reloads
+      - helpdesk-db:/data              # persistent SQLite DB
+
+  dotnet:
+    build:
+      context: ./apps/dotnet
+      dockerfile: Dockerfile.dev       # SDK image running `dotnet watch`
+    environment:
+      HELPDESK_DB: /data/helpdesk.db
+      HELPDESK_PERSIST: "1"
+      # RESET: "1"                     # uncomment for one boot to wipe + reseed
+    volumes:
+      - ./apps/dotnet:/src             # edit Program.cs on the host; watch recompiles
+      - helpdesk-db-dotnet:/data       # persistent SQLite DB
+
+volumes:
+  helpdesk-db:
+  helpdesk-db-dotnet:

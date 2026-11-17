@@ -1,0 +1,14 @@
+# Day-3 dev image for the .NET app: `dotnet watch` hot-reloads your C# edits.
+# Used by docker-compose.dev.yml; source is bind-mounted over /src.
+FROM mcr.microsoft.com/dotnet/sdk:8.0
+# iputils-ping: the admin diagnostics (cmdi challenge) shells out to `ping`.
+RUN apt-get update && apt-get install -y --no-install-recommends iputils-ping \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+COPY lab.csproj .
+RUN dotnet restore
+COPY . .
+ENV DOTNET_USE_POLLING_FILE_WATCHER=1
+EXPOSE 5001
+# --no-launch-profile: ignore any launchSettings; we bind the URL in code.
+ENTRYPOINT ["dotnet", "watch", "run", "--no-launch-profile", "--non-interactive"]

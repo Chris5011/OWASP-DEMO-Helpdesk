@@ -44,16 +44,17 @@ challenge lab's scoreboard: **http://localhost:5000/scoreboard**.
 
 | App | URL | Mode |
 |-----|-----|------|
-| Python/Flask | http://localhost:5000 | **Challenge lab** (Helpdesk + scoreboard) |
+| Python/Flask | http://localhost:5000 | **Challenge lab** (Helpdesk + scoreboard, 12/12) |
+| .NET/C# | http://localhost:5001 | **Challenge lab** (same Helpdesk, 12/12) |
 | Java/Javalin | http://localhost:7000 | **Challenge lab** (same Helpdesk, 11/12 — `deser` in progress) |
-| .NET/C# | http://localhost:5001 | Demonstrator (vuln/secure routes) |
 
 ## Helpdesk challenge lab (Juice Shop / PSA style)
 
-Implemented in Python/Flask (`apps/python`, reference) and Java/Javalin
-(`apps/java`, port 7000) with the same challenge ids, flags and server-side solve
-detection, so a cohort can work in its own stack. Paths below are identical in both;
-only the port differs.
+Implemented in Python/Flask (`apps/python`, reference, port 5000), .NET/C#
+(`apps/dotnet`, port 5001) and Java/Javalin (`apps/java`, port 7000) with the same
+challenge ids, flags and server-side solve detection, so a cohort can work in its own
+stack. Paths below are identical in all three; only the port differs. C# is the
+preferred stack for .NET cohorts.
 
 A single coherent **Helpdesk** application. Vulnerabilities are embedded in normal
 features — you find and exploit them to reach a goal. The server **auto-detects**
@@ -73,7 +74,7 @@ note. Progressive hints (3 per challenge) suit mixed-level cohorts.
 | 9 | A05 | Steal admin cookie (stored XSS → collector) | medium | ticket comment + `/collector/log` |
 | 10 | A01 | SSRF via avatar fetch | medium | `/profile/avatar?url=` |
 | 11 | A05 | OS command injection | hard | `/admin/ping` (needs the admin role) |
-| 12 | A08 | Insecure deserialization | hard | profile export/import (Java: in progress) |
+| 12 | A08 | Insecure deserialization | hard | profile export/import (Python + .NET live; Java in progress) |
 
 Notes:
 - **Chained kill chain**: #7 (privesc) grants the admin role needed for #11 (command
@@ -104,23 +105,52 @@ Defensive targets that start **red** and go green as trainees fix `app.py`:
 This is the day-3 flow: read the source, fix the flaws + headers + logging, then run
 code/dependency scanners (see A03 below).
 
+#### Day-3 dev mode (live reload + kept progress)
+Rebuilding on every edit is slow and wipes solve progress. For day 3, run the app with
+the dev overlay — pick your stack:
+
+```bash
+# Python
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up python
+# .NET / C#
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up dotnet
+```
+
+This bind-mounts the app source and turns on live reload (**Flask's reloader** for
+Python, **`dotnet watch`** for .NET), so **saving the file reloads the app in ~1–2s — no
+rebuild** — and moves the SQLite DB onto a named volume so **solves survive reloads and
+restarts**. The loop is: edit the source → save → refresh `/hardening` and watch red go
+green, with your day-1/2 solves intact.
+
+- **How headers get set:** the only nginx here serves the landing page — it is *not* a
+  proxy in front of the app — so response headers must come from the app. Implement
+  `set_headers()` (the `@app.after_request` hook) and set `SECURITY_HEADERS_ENABLED =
+  True`. `/hardening` fetches the app's own `/` over loopback and grades the headers,
+  so it needs no external scanner.
+- **Reset progress:** `docker compose -f docker-compose.yml -f docker-compose.dev.yml
+  down -v` (removes the volume), or set `RESET=1` for one boot.
+- **Never use `debug=True`:** it exposes the Werkzeug console (arbitrary code
+  execution). The overlay uses the reloader only.
+
 ### Teaching flow
 Challenge-first, then remediation: learners exploit (Understand → Demonstrate →
 Investigate), the scoreboard reveals the **Fix** note on solve, then they apply it in
 the app's source and re-run the exploit to confirm it now fails (Remediate → Verify).
-The .NET demonstrator's `/secure` handlers show a worked before/after.
+Step-by-step fix guides and the day-3 slides are instructor material and are handed
+out separately; they are deliberately not part of this repository or the images.
 
 ### Adding a challenge
-1. Append a dict to `CHALLENGES` in `apps/python/app.py` (id, cat, diff, goal, hints, flag, fix).
+1. Append to the `CHALLENGES` list in the app (id, cat, diff, goal, hints, flag, fix) —
+   `apps/python/app.py`, `apps/dotnet/Program.cs` or `apps/java/.../Main.java`.
 2. Embed the flaw in a feature handler; call `solve("<id>")` from the detection check.
 3. Done — the scoreboard renders it automatically.
 
-## Demonstrator app (.NET)
+## .NET / C# challenge lab
 
-Side-by-side `/<class>/vuln` vs `/<class>/secure` routes for SQLi, XSS, IDOR and
-cryptographic storage — the explicit before/after for the Remediate→Verify step.
-**Conversion to the Helpdesk challenge model is the next step** for parity with
-Python and Java. (`/hardening` is also Python-only so far.)
+Full parity with the Python reference: same 12 challenge ids, flags and server-side
+solve detection, plus the `/storage` credential lab and the `/hardening` day-3 surface,
+in ASP.NET Core (`apps/dotnet/Program.cs`, one file). It also ships a hot-reload dev
+loop (`dotnet watch`). This is the recommended stack for C# cohorts.
 
 ## Stack-level categories (no per-app route)
 
