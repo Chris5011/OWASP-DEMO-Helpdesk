@@ -8,7 +8,7 @@
 // exploit). Vulnerabilities live inside normal Helpdesk features.
 //
 // Day-3 hardening: trainees fix the flaws + wire security headers + logging in THIS
-// file (C#), then watch /hardening go green. See apps/dotnet/HARDENING.md.
+// file (C#), then watch /hardening go green.
 
 using System.Diagnostics;
 using System.Net;
@@ -57,7 +57,19 @@ var http = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
 string BASE = """
 <!doctype html><html lang=en><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1"><title>Helpdesk &middot; .NET</title>
-<style>
+<link rel=stylesheet href="/assets/app.css">
+<nav><span class=brand>&#128737; Helpdesk</span>
+<a href="/">Home</a><a href="/tickets">Tickets</a><a href="/storage">Storage</a>
+<a href="/hardening">Hardening</a><a href="/collector/log">Collector</a><a href="/scoreboard">Scoreboard</a>
+[[NAV]]
+</nav><main>[[BODY]]</main></html>
+""";
+
+// Page CSS + JS are served from /assets/* instead of being inlined, so a strict
+// CSP (default-src 'self') can be applied without breaking the UI.
+string HINT_SCRIPT = "<script src=\"/assets/hints.js\"></script>";
+
+string APP_CSS = """
 :root{color-scheme:light dark;--bg:#f6f7f9;--fg:#1a1d21;--card:#fff;--line:#e3e6ea;
 --brand:#2b6cb0;--muted:#6b7280;--ok:#15803d;--okbg:#dcfce7;--no:#b91c1c;--nobg:#fee2e2;--chip:#eef2f7}
 @media(prefers-color-scheme:dark){:root{--bg:#0f1216;--fg:#e6e8eb;--card:#171b21;--line:#2a2f37;
@@ -85,17 +97,10 @@ th{background:var(--chip)}.warn{color:var(--no);font-weight:600}
 table.fixed{table-layout:fixed}table.fixed td:nth-child(2){width:60%}
 .flag{color:var(--ok);font-weight:700}.muted{color:var(--muted)}.grid{display:grid;gap:.6rem}
 tr.ok{background:var(--okbg)}.row{display:flex;gap:.5rem;align-items:center}
-</style>
-<nav><span class=brand>&#128737; Helpdesk</span>
-<a href="/">Home</a><a href="/tickets">Tickets</a><a href="/storage">Storage</a>
-<a href="/hardening">Hardening</a><a href="/collector/log">Collector</a><a href="/scoreboard">Scoreboard</a>
-[[NAV]]
-</nav><main>[[BODY]]</main></html>
+.btn.alt{background:#555}.searchform{flex:1;display:flex;gap:.5rem}
 """;
 
-// Client-side staggered-hint reveal (avoids server templating braces).
-string HINT_SCRIPT = """
-<script>
+string HINTS_JS = """
 (function(){
   var hints = document.querySelectorAll('#hints .hint');
   var btn = document.getElementById('moreHint');
@@ -112,7 +117,6 @@ string HINT_SCRIPT = """
   });
   update();
 })();
-</script>
 """;
 
 // --------------------------------------------------------------------------- //
@@ -265,6 +269,10 @@ app.Use(async (ctx, next) =>
 // --------------------------------------------------------------------------- //
 // Routes
 // --------------------------------------------------------------------------- //
+// ---- Static assets (served by the app so the CSP can stay strict) ------- //
+app.MapGet("/assets/app.css", () => Results.Text(APP_CSS, "text/css"));
+app.MapGet("/assets/hints.js", () => Results.Text(HINTS_JS, "application/javascript"));
+
 app.MapGet("/", (HttpContext ctx) =>
 {
     int done = SolvedIds().Count;
@@ -356,8 +364,8 @@ app.MapGet("/tickets", (HttpContext ctx) =>
     string body =
         "<div class=card><h2>Your tickets</h2>" +
         "<p class=row><a class=btn href=/ticket/new>+ New ticket</a> " +
-        "<a class=btn href=/ticket/import style=background:#555>Import XML</a>" +
-        "<form action=/search style=\"flex:1;display:flex;gap:.5rem\">" +
+        "<a class=\"btn alt\" href=/ticket/import>Import XML</a>" +
+        "<form action=/search class=searchform>" +
         "<input name=q placeholder=\"search tickets\"><button>Search</button></form></p>" +
         "<ul>" + sb + "</ul></div>";
     return Html(Render(ctx, body));
@@ -410,8 +418,7 @@ app.MapGet("/ticket/{tid:int}", (HttpContext ctx, int tid) =>
         cmd.CommandText = "SELECT author,body FROM comments WHERE ticket_id=$i";
         cmd.Parameters.AddWithValue("$i", tid);
         using var r = cmd.ExecuteReader();
-        // VULN (A05 stored XSS): comment bodies rendered UNESCAPED (the one XSS sink).
-        while (r.Read()) cmts.Append($"<p><b>{Enc(r.GetString(0))}:</b> {r.GetString(1)}</p>");
+        while (r.Read()) cmts.Append(RenderComment(r.GetString(0), r.GetString(1)));
     }
     string body =
         $"<div class=card><h2>#{tid} {Enc(title!)}</h2>" +
@@ -889,6 +896,11 @@ double Now() => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0;
 
 string Enc(string s) => WebUtility.HtmlEncode(s);
 
+// HTML for one comment. Used by the ticket page AND the admin bot, so the bot only
+// "fires" if a payload survives rendering - fix it here and the XSS stops.
+// VULN (A05 stored XSS): the comment body is inserted UNESCAPED (the one XSS sink).
+string RenderComment(string author, string body) => $"<p><b>{Enc(author)}:</b> {body}</p>";
+
 IResult Html(string html, int status = 200) =>
     Results.Content(html, "text/html; charset=utf-8", Encoding.UTF8, status);
 
@@ -1130,7 +1142,9 @@ void Seed()
 // ---- admin review bot ----------------------------------------------------- //
 async Task AdminBot()
 {
-    string[] sinks = { "<script", "onerror", "onload", "<svg", "<img" };
+    // a REAL sink: a live <script> tag, or a live tag carrying an on*= handler
+    // (escaped output has no '<', so it never matches).
+    var sinkRe = new Regex(@"<script|<[a-z][^>]*[\s/]on[a-z]+\s*=");
     var urlRe = new Regex("https?://[^\\s'\"<>()]+");
     while (true)
     {
@@ -1147,7 +1161,10 @@ async Task AdminBot()
             foreach (var (id, body) in pending)
             {
                 string low = body.ToLowerInvariant();
-                bool fired = sinks.Any(s => low.Contains(s));
+                // the admin "views" the ticket: judge what the page actually renders,
+                // so output-encoding the comment (the fix) stops the payload firing.
+                string rendered = RenderComment("", body).ToLowerInvariant();
+                bool fired = sinkRe.IsMatch(rendered);
                 bool exfil = low.Contains("document.cookie");
                 var m = urlRe.Match(body);
                 if (fired && exfil && m.Success)

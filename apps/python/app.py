@@ -28,6 +28,7 @@ from argon2 import PasswordHasher
 from lxml import etree
 from flask import (Flask, Response, g, redirect, request, session, url_for,
                    render_template_string)
+from markupsafe import Markup
 
 app = Flask(__name__)
 app.secret_key = "dev-not-secret"
@@ -283,10 +284,9 @@ def set_headers(resp):
 # --------------------------------------------------------------------------- #
 # UI
 # --------------------------------------------------------------------------- #
-BASE = """<!doctype html><html lang=en><meta charset=utf-8>
-<meta name=viewport content="width=device-width,initial-scale=1"><title>Helpdesk</title>
-<style>
-:root{color-scheme:light dark;--bg:#f6f7f9;--fg:#1a1d21;--card:#fff;--line:#e3e6ea;
+# Page CSS + JS are served from /assets/* instead of being inlined, so a strict
+# CSP (default-src 'self') can be applied without breaking the UI.
+APP_CSS = """:root{color-scheme:light dark;--bg:#f6f7f9;--fg:#1a1d21;--card:#fff;--line:#e3e6ea;
 --brand:#2b6cb0;--muted:#6b7280;--ok:#15803d;--okbg:#dcfce7;--no:#b91c1c;--nobg:#fee2e2;--chip:#eef2f7}
 @media(prefers-color-scheme:dark){:root{--bg:#0f1216;--fg:#e6e8eb;--card:#171b21;--line:#2a2f37;
 --brand:#5aa2e0;--muted:#9aa4b2;--okbg:#0f2e1c;--nobg:#2e1414;--chip:#1e242c}}
@@ -313,7 +313,31 @@ th{background:var(--chip)}.warn{color:var(--no);font-weight:600}
 table.fixed{table-layout:fixed}table.fixed td:nth-child(2){width:60%}
 .flag{color:var(--ok);font-weight:700}.muted{color:var(--muted)}.grid{display:grid;gap:.6rem}
 tr.ok{background:var(--okbg)}.row{display:flex;gap:.5rem;align-items:center}
-</style>
+.btn.alt{background:#555}.searchform{flex:1;display:flex;gap:.5rem}
+"""
+
+HINTS_JS = """(function(){
+  var hints = document.querySelectorAll('#hints .hint');
+  var btn = document.getElementById('moreHint');
+  var count = document.getElementById('hintCount');
+  if(!hints.length){return;}
+  var shown = 1;
+  function update(){
+    count.textContent = shown + ' of ' + hints.length + ' shown';
+    if(shown >= hints.length){ btn.hidden = true; }
+    else { btn.textContent = 'Show hint ' + (shown + 1); }
+  }
+  btn.addEventListener('click', function(){
+    if(shown < hints.length){ hints[shown].hidden = false; shown++; update(); }
+  });
+  update();
+})();
+"""
+
+
+BASE = """<!doctype html><html lang=en><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1"><title>Helpdesk</title>
+<link rel=stylesheet href="/assets/app.css">
 <nav><span class=brand>&#128737; Helpdesk</span>
 <a href="/">Home</a><a href="/tickets">Tickets</a><a href="/storage">Storage</a>
 <a href="/hardening">Hardening</a><a href="/collector/log">Collector</a><a href="/scoreboard">Scoreboard</a>
@@ -327,6 +351,19 @@ def page(body, **kw):
     return render_template_string(
         BASE, user=current(),
         body=render_template_string(body, user=current(), **kw))
+
+
+# --------------------------------------------------------------------------- #
+# Static assets (served by the app so the CSP can stay strict: no inline code)
+# --------------------------------------------------------------------------- #
+@app.route("/assets/app.css")
+def asset_css():
+    return Response(APP_CSS, mimetype="text/css")
+
+
+@app.route("/assets/hints.js")
+def asset_js():
+    return Response(HINTS_JS, mimetype="application/javascript")
 
 
 # --------------------------------------------------------------------------- #
@@ -400,8 +437,8 @@ def tickets():
     rows = db().execute("SELECT * FROM tickets WHERE owner=?", (current()["name"],)).fetchall()
     return page("""<div class=card><h2>Your tickets</h2>
       <p class=row><a class=btn href=/ticket/new>+ New ticket</a>
-      <a class=btn href=/ticket/import style=background:#555>Import XML</a>
-      <form action=/search style="flex:1;display:flex;gap:.5rem">
+      <a class="btn alt" href=/ticket/import>Import XML</a>
+      <form action=/search class=searchform>
         <input name=q placeholder="search tickets"><button>Search</button></form></p>
       <ul>{% for t in rows %}<li><a href="/ticket/{{t['id']}}">#{{t['id']}} {{t['title']}}</a></li>{% endfor %}</ul>
       </div>""", rows=rows)
@@ -432,15 +469,22 @@ def ticket_view(tid):
     if t["owner"] == "admin" and current()["name"] != "admin":
         solve("idor")
     cmts = db().execute("SELECT * FROM comments WHERE ticket_id=?", (tid,)).fetchall()
-    # VULN (A05 stored XSS): comment bodies rendered unescaped (|safe).
     return page("""<div class=card><h2>#{{t['id']}} {{t['title']}}</h2>
       <p class=muted>owner: {{t['owner']}} &middot;
       <a href="/report?id={{t['id']}}">Printable report</a></p>
       <p>{{t['body']}}</p><h3>Comments</h3>
-      {% for c in cmts %}<p><b>{{c['author']}}:</b> {{c['body']|safe}}</p>{% endfor %}
+      {% for c in cmts %}{{ render_comment(c['author'], c['body']) }}{% endfor %}
       <form method=post action="/ticket/{{t['id']}}/comment" class=grid>
       <textarea name=body rows=2 placeholder="add a comment"></textarea>
-      <div><button>Comment</button></div></form></div>""", t=t, cmts=cmts)
+      <div><button>Comment</button></div></form></div>""", t=t, cmts=cmts,
+                render_comment=render_comment)
+
+
+def render_comment(author, body):
+    """HTML for one comment. Used by the ticket page AND the admin bot, so the bot
+    only "fires" if a payload survives rendering - fix it here and the XSS stops."""
+    # VULN (A05 stored XSS): the comment body is inserted unescaped.
+    return Markup("<p><b>%s:</b> %s</p>" % (escape(author), body))
 
 
 @app.route("/ticket/<int:tid>/comment", methods=["POST"])
@@ -797,24 +841,7 @@ def challenge_detail(cid):
       <span id=hintCount class=muted></span></p></div>
       {% if done %}<div class=card><p class=flag>{{c['flag']}}</p>
       <p class=muted><b>Fix:</b> {{c['fix']}}</p></div>{% endif %}
-      <script>
-      (function(){
-        var hints = document.querySelectorAll('#hints .hint');
-        var btn = document.getElementById('moreHint');
-        var count = document.getElementById('hintCount');
-        if(!hints.length){return;}
-        var shown = 1;
-        function update(){
-          count.textContent = shown + ' of ' + hints.length + ' shown';
-          if(shown >= hints.length){ btn.hidden = true; }
-          else { btn.textContent = 'Show hint ' + (shown + 1); }
-        }
-        btn.addEventListener('click', function(){
-          if(shown < hints.length){ hints[shown].hidden = false; shown++; update(); }
-        });
-        update();
-      })();
-      </script>""",
+      <script src="/assets/hints.js"></script>""",
                 c=c, done=done, catname=CAT_NAMES.get(c["cat"], c["cat"]),
                 start_url=url, start_label=label, note=note)
 
@@ -846,7 +873,9 @@ def scoreboard():
 # Admin review bot: stored XSS must EXFILTRATE the admin cookie (not just alert)
 # --------------------------------------------------------------------------- #
 def admin_bot():
-    sinks = ("<script", "onerror", "onload", "<svg", "<img")
+    # a REAL sink: a live <script> tag, or a live tag carrying an on*= handler
+    # (escaped output has no '<', so it never matches).
+    sink_re = re.compile(r"<script|<[a-z][^>]*[\s/]on[a-z]+\s*=")
     url_re = re.compile(r'https?://[^\s\'"<>()]+')
     while True:
         try:
@@ -855,7 +884,10 @@ def admin_bot():
             for row in c.execute("SELECT * FROM comments WHERE seen=0").fetchall():
                 body = row["body"] or ""
                 low = body.lower()
-                fired = any(s in low for s in sinks)
+                # the admin "views" the ticket: judge what the page actually renders,
+                # so output-encoding the comment (the fix) stops the payload firing.
+                rendered = str(render_comment(row["author"] or "", body)).lower()
+                fired = bool(sink_re.search(rendered))
                 exfil = "document.cookie" in low
                 m = url_re.search(body)
                 if fired and exfil and m:

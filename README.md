@@ -45,7 +45,7 @@ challenge lab's scoreboard: **http://localhost:5000/scoreboard**.
 | App | URL | Mode |
 |-----|-----|------|
 | Python/Flask | http://localhost:5000 | **Challenge lab** (Helpdesk + scoreboard, 12/12) |
-| .NET/C# | http://localhost:5001 | **Challenge lab** (same Helpdesk, 12/12) + [fix guide](apps/dotnet/HARDENING.md) |
+| .NET/C# | http://localhost:5001 | **Challenge lab** (same Helpdesk, 12/12) |
 | Java/Javalin | http://localhost:7000 | **Challenge lab** (same Helpdesk, 11/12 — `deser` in progress) |
 
 ## Helpdesk challenge lab (Juice Shop / PSA style)
@@ -54,7 +54,7 @@ Implemented in Python/Flask (`apps/python`, reference, port 5000), .NET/C#
 (`apps/dotnet`, port 5001) and Java/Javalin (`apps/java`, port 7000) with the same
 challenge ids, flags and server-side solve detection, so a cohort can work in its own
 stack. Paths below are identical in all three; only the port differs. C# is the
-preferred stack for .NET cohorts — see its step-by-step [fix guide](apps/dotnet/HARDENING.md).
+preferred stack for .NET cohorts.
 
 A single coherent **Helpdesk** application. Vulnerabilities are embedded in normal
 features — you find and exploit them to reach a goal. The server **auto-detects**
@@ -120,8 +120,7 @@ This bind-mounts the app source and turns on live reload (**Flask's reloader** f
 Python, **`dotnet watch`** for .NET), so **saving the file reloads the app in ~1–2s — no
 rebuild** — and moves the SQLite DB onto a named volume so **solves survive reloads and
 restarts**. The loop is: edit the source → save → refresh `/hardening` and watch red go
-green, with your day-1/2 solves intact. (C# devs: the full walkthrough is in
-[`apps/dotnet/HARDENING.md`](apps/dotnet/HARDENING.md).)
+green, with your day-1/2 solves intact.
 
 - **How headers get set:** the only nginx here serves the landing page — it is *not* a
   proxy in front of the app — so response headers must come from the app. Implement
@@ -137,8 +136,8 @@ green, with your day-1/2 solves intact. (C# devs: the full walkthrough is in
 Challenge-first, then remediation: learners exploit (Understand → Demonstrate →
 Investigate), the scoreboard reveals the **Fix** note on solve, then they apply it in
 the app's source and re-run the exploit to confirm it now fails (Remediate → Verify).
-For C# cohorts, [`apps/dotnet/HARDENING.md`](apps/dotnet/HARDENING.md) walks the whole
-Remediate → Verify loop per challenge, written for devs who aren't Linux users.
+Step-by-step fix guides and the day-3 slides are instructor material and are handed
+out separately; they are deliberately not part of this repository or the images.
 
 ### Adding a challenge
 1. Append to the `CHALLENGES` list in the app (id, cat, diff, goal, hints, flag, fix) —
@@ -151,9 +150,7 @@ Remediate → Verify loop per challenge, written for devs who aren't Linux users
 Full parity with the Python reference: same 12 challenge ids, flags and server-side
 solve detection, plus the `/storage` credential lab and the `/hardening` day-3 surface,
 in ASP.NET Core (`apps/dotnet/Program.cs`, one file). It also ships a hot-reload dev
-loop (`dotnet watch`) and a dev-facing, **Linux-free** remediation guide:
-[`apps/dotnet/HARDENING.md`](apps/dotnet/HARDENING.md). This is the recommended stack for
-C# cohorts.
+loop (`dotnet watch`). This is the recommended stack for C# cohorts.
 
 ## Stack-level categories (no per-app route)
 
