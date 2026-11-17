@@ -31,7 +31,11 @@ from flask import (Flask, Response, g, redirect, request, session, url_for,
 
 app = Flask(__name__)
 app.secret_key = "dev-not-secret"
-DB = "/tmp/helpdesk.db"
+# DB path + day-3 behaviour are env-driven so docker-compose.dev.yml can turn on a
+# persistent DB + live reload without changing the default (days 1-2) behaviour.
+DB = os.environ.get("HELPDESK_DB", "/tmp/helpdesk.db")
+PERSIST = os.environ.get("HELPDESK_PERSIST") == "1"      # keep solves across restarts
+USE_RELOADER = os.environ.get("HELPDESK_RELOAD") == "1"  # live code reload (day 3)
 CMDI_FLAG_FILE = "/tmp/ctf_root.txt"
 XXE_SECRET_FILE = "/tmp/xxe_secret.txt"
 DESER_CANARY = "/tmp/deser_pwned"
@@ -232,6 +236,11 @@ def seed():
     """)
     c.commit()
     c.close()
+
+
+def prepare_runtime_files():
+    # Loot files + the deser canary are NOT progress; (re)create them on every boot,
+    # in both the default mode and the day-3 persistent mode.
     for p, content in ((CMDI_FLAG_FILE, "FLAG{os_command_injection_rce}\n"),
                        (XXE_SECRET_FILE, "FLAG{xxe_file_disclosure}\n")):
         with open(p, "w") as f:
@@ -867,6 +876,17 @@ def admin_bot():
 
 
 if __name__ == "__main__":
-    seed()
-    threading.Thread(target=admin_bot, daemon=True).start()
-    app.run(host="0.0.0.0", port=5000, debug=False, threaded=True)
+    # With the reloader on, Werkzeug runs this module in a watcher AND a worker
+    # process; seeding, loot and the admin bot belong only to the worker (or to a
+    # plain no-reload run).
+    is_worker = (not USE_RELOADER) or os.environ.get("WERKZEUG_RUN_MAIN") == "true"
+    if is_worker:
+        prepare_runtime_files()
+        # Day 3: keep an existing DB (and its solves) unless RESET=1. Default mode
+        # has no persistent DB, so this reseeds on every boot as before.
+        keep = PERSIST and os.path.exists(DB) and os.environ.get("RESET") != "1"
+        if not keep:
+            seed()
+        threading.Thread(target=admin_bot, daemon=True).start()
+    app.run(host="0.0.0.0", port=5000, debug=False, threaded=True,
+            use_reloader=USE_RELOADER)

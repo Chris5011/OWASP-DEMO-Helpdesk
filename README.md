@@ -104,6 +104,29 @@ Defensive targets that start **red** and go green as trainees fix `app.py`:
 This is the day-3 flow: read the source, fix the flaws + headers + logging, then run
 code/dependency scanners (see A03 below).
 
+#### Day-3 dev mode (live reload + kept progress)
+Rebuilding on every edit is slow and wipes solve progress. For day 3, run the Python
+app with the dev overlay:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up python
+```
+
+This bind-mounts `apps/python/app.py` and turns on Flask's reloader, so **saving the
+file reloads the app in ~1s — no rebuild** — and moves the SQLite DB onto a named
+volume so **solves survive reloads and restarts**. The loop is: edit `app.py` → save →
+refresh `/hardening` and watch red go green, with your day-1/2 solves intact.
+
+- **How headers get set:** the only nginx here serves the landing page — it is *not* a
+  proxy in front of the app — so response headers must come from the app. Implement
+  `set_headers()` (the `@app.after_request` hook) and set `SECURITY_HEADERS_ENABLED =
+  True`. `/hardening` fetches the app's own `/` over loopback and grades the headers,
+  so it needs no external scanner.
+- **Reset progress:** `docker compose -f docker-compose.yml -f docker-compose.dev.yml
+  down -v` (removes the volume), or set `RESET=1` for one boot.
+- **Never use `debug=True`:** it exposes the Werkzeug console (arbitrary code
+  execution). The overlay uses the reloader only.
+
 ### Teaching flow
 Challenge-first, then remediation: learners exploit (Understand → Demonstrate →
 Investigate), the scoreboard reveals the **Fix** note on solve, then they apply it in
